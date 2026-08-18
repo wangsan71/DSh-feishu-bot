@@ -29,6 +29,8 @@ no public URL, no tunnel required.
   push a notification to Feishu (`[workspace]-[session]: [content]`; target
   defaults to `notify_chat_id`, see the init doc). For shell use
   `node scripts/send-notify.cjs --text "hi"` (UTF-8 safe).
+- **Send files**: agents can call `lark_send_file` to push a local file
+  (≤30 MB) straight into the Feishu chat.
 
 > 📖 **Docs**: [初始化文档.md](初始化文档.md) (setup from scratch) ·
 > [交接文档.md](交接文档.md) (maintainers: architecture, official dev format,
@@ -70,7 +72,7 @@ Restart `dsh web` after install (or follow the `dsh plugin` hot-mount hint). A
 Config is stored at `~/.dsh/dsh-feishu-bot.json` (`app_id` / `app_secret` /
 `domain`).
 
-## Bot menu commands
+## Chat commands
 
 Send these in the bot's chat (Chinese or English, optional `/` prefix):
 
@@ -78,32 +80,16 @@ Send these in the bot's chat (Chinese or English, optional `/` prefix):
 |---|---|---|
 | `新建工作区 <path> [title]` / `NEW_WORKSPACE` | create and switch to a new workspace | the path must be an existing directory |
 | `新建会话` / `NEW_SESSION` | create a new session in the current workspace | the new session binds an independent agent |
-| `切换工作区 [index/path]` / `WORKSPACE_CHANGE` | switch among **already-created** workspaces | no arg lists all workspaces |
-| `切换会话 [index]` / `CHANGE_SESSION` | switch among sessions **within the current workspace** | no arg lists the current workspace's sessions |
+| `切换工作区 [index/path]` / `WORKSPACE_CHANGE` | switch among **already-created** workspaces | no arg pops a card and lists all workspaces |
+| `切换会话 [index]` / `CHANGE_SESSION` | switch among sessions **within the current workspace** | no arg pops a card and lists the current workspace's sessions |
 | `帮助` / `HELP` | show the command list | |
 
 Each chat's current workspace/session is persisted in
 `~/.dsh/dsh-feishu-bot-state.json`; switching to an existing session restores
 its conversation history.
 
-## Bot custom menu
-
-Configure a custom menu for the bot in the Feishu/Lark developer console
-(event type `application.bot.menu_v6`). Set each menu item's **key** to one of
-the values below; clicking it runs the matching command (the reply goes to
-your DM):
-
-| Menu item key | Action |
-|---|---|
-| `new_workspace` / `新建工作区` | create a workspace (usage hint when no path) |
-| `new_session` / `新建会话` | create a new session in the current workspace |
-| `change_workspace` / `切换工作区` | list already-created workspaces |
-| `change_session` / `切换会话` | list the current workspace's sessions |
-| `help` / `帮助` | show the command list |
-
-After a menu click the bot shows an **interactive card** (one button per
-option); tap a button to switch, or reply with the number in the DM (text
-commands work too).
+> Switching commands with no argument send an **interactive card** (one button
+> per option); tap a button to switch, or reply with the number in the DM.
 
 ## Agent questions relayed to you
 
@@ -141,7 +127,8 @@ developer console (scan-login, about two minutes).
   file in the user home, mode 0600); never expose this path to the model or logs.
 - Each chat conversation consumes API quota; the agent can run file/shell
   operations as normal DSH capabilities.
-- Text messages only (`message_type: text`); images/cards are not handled yet.
+- Text messages only for inbound handling (`message_type: text`); the bot can
+  send text, interactive cards, and files (`lark_send_file`).
 - Mounted via `cordis.patch.yml`; the plugin row auto-restores after a DSH
   process restart.
 
