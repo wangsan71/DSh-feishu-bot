@@ -285,9 +285,10 @@ export function apply(ctx: Context, config?: Config): void {
       Authorization: 'Bearer ' + t,
       'Content-Type': 'multipart/form-data; boundary=' + boundary,
     }, body as unknown as string)
-    const data = JSON.parse(res.text) as { code?: number; file_key?: string; msg?: string }
-    if (data.code !== 0 || !data.file_key) throw new Error('upload failed: ' + String(res.text).slice(0, 300))
-    return data.file_key
+    const parsed = JSON.parse(res.text) as { code?: number; data?: { file_key?: string }; msg?: string }
+    const fileKey = parsed.data?.file_key ?? ''
+    if (parsed.code !== 0 || fileKey === '') throw new Error('upload failed: ' + String(res.text).slice(0, 300))
+    return fileKey
   }
 
   /** Send a file message (msg_type: file) to a chat or open_id. */
