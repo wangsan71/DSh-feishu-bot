@@ -50,7 +50,7 @@ const GUIDANCE =
   '本机已安装 dsh-feishu-bot 插件（飞书/Lark 机器人）：长连接（WebSocket）接收事件，无需公网 URL；' +
   '配置存 ~/.dsh/dsh-feishu-bot.json（app_id / app_secret / domain，domain 自动检测 feishu/lark 国内外通用）；' +
   '机器人菜单命令：新建工作区 <路径> / 新建会话 / 切换工作区 / 切换会话（会话仅当前工作区内切换）；' +
-  '工具：lark_status 查看状态、lark_configure 写入配置并重启桥接、lark_test 验证凭据与连接。' +
+  '工具：lark_status 查看状态、lark_configure 写入配置并重启桥接、lark_test 验证凭据与连接、lark_notify 从任意对话向飞书发通知（格式 [工作区]-[对话]：[内容]）。' +
   '限制：app_secret 明文存在用户主目录私有文件；对话消耗 API 额度；用户提到「飞书 / Lark / 机器人 / 扫码配机器人」时即指本插件。'
 
 /** Config file location: $DSH_HOME/dsh-feishu-bot.json (default ~/.dsh/...). */
@@ -73,6 +73,8 @@ interface BotConfig {
   cwd?: string
   agent_preset?: string
   max_reply_chars?: number
+  /** Default target chat (chat_id or open_id) for lark_notify from other DSH conversations. */
+  notify_chat_id?: string
 }
 
 /** Per-chat bot state: which workspace + which session key the chat is on. */
@@ -702,13 +704,14 @@ export function apply(ctx: Context, config?: Config): void {
       websocketEnabled: botConfig.websocket !== false,
       agentCount: chatAgents.size,
       bridgeRunning: bridgeHandle !== null,
+      notifyConfigured: botConfig.notify_chat_id !== undefined && botConfig.notify_chat_id !== '',
       configPath: configPath(),
     })
   }
 
   async function configApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === 'GET') {
-      json(res, 200, { app_id: botConfig.app_id ?? '', domain: botConfig.domain ?? 'feishu', websocket: botConfig.websocket !== false, cwd: botConfig.cwd ?? '', agent_preset: botConfig.agent_preset ?? '', max_reply_chars: botConfig.max_reply_chars ?? 8000 })
+      json(res, 200, { app_id: botConfig.app_id ?? '', domain: botConfig.domain ?? 'feishu', websocket: botConfig.websocket !== false, cwd: botConfig.cwd ?? '', agent_preset: botConfig.agent_preset ?? '', max_reply_chars: botConfig.max_reply_chars ?? 8000, notify_chat_id: botConfig.notify_chat_id ?? '' })
       return
     }
     try {
@@ -721,6 +724,7 @@ export function apply(ctx: Context, config?: Config): void {
       if (typeof patch.agent_preset === 'string') botConfig.agent_preset = patch.agent_preset
       if (typeof patch.max_reply_chars === 'number') botConfig.max_reply_chars = patch.max_reply_chars
       if (typeof patch.websocket === 'boolean') botConfig.websocket = patch.websocket
+      if (typeof patch.notify_chat_id === 'string') botConfig.notify_chat_id = patch.notify_chat_id
       await saveConfig()
       if (bridgeHandle !== null) { try { bridgeHandle.terminate() } catch (e) { /* ignore */ } bridgeHandle = null }
       if (botConfig.websocket !== false && botConfig.app_id && botConfig.app_secret) await startBridge()
@@ -761,16 +765,18 @@ export function apply(ctx: Context, config?: Config): void {
       app_secret: { type: 'string', description: 'Feishu/Lark app secret from the developer console.' },
       domain: { type: 'string', enum: ['auto', 'feishu', 'lark'], description: 'Platform domain. auto probes both (default).' },
       cwd: { type: 'string', description: 'Optional working directory for the bot agents.' },
+      notify_chat_id: { type: 'string', description: 'Default chat_id/open_id for lark_notify notifications from other DSH conversations.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: false, properties: {} },
       render: renderJson,
     },
-    execute: async (args: { app_id?: string; app_secret?: string; domain?: string; cwd?: string }) => {
+    execute: async (args: { app_id?: string; app_secret?: string; domain?: string; cwd?: string; notify_chat_id?: string }) => {
       if (args.app_id !== undefined) botConfig.app_id = args.app_id
       if (args.app_secret !== undefined && args.app_secret !== '') botConfig.app_secret = args.app_secret
       if (args.domain !== undefined && args.domain !== '') botConfig.domain = args.domain
       if (args.cwd !== undefined) botConfig.cwd = args.cwd
+      if (args.notify_chat_id !== undefined) botConfig.notify_chat_id = args.notify_chat_id
       if (botConfig.domain === 'auto' || botConfig.domain === undefined || botConfig.domain === '') {
         try {
           const detected = await detectDomain(botConfig)
@@ -805,6 +811,86 @@ export function apply(ctx: Context, config?: Config): void {
     },
   })
 
+  /**
+   * Resolve the notification context (target chat + workspace/session labels)
+   * for a caller that is a normal DSH conversation (not a Feishu chat).
+   * Falls back to the configured notify_chat_id and to the caller agent's own
+   * workspace/session when they are bound to a workspace; otherwise empty.
+   */
+  function notifyContext(exec: any): { chatId: string; workspace: string; session: string } {
+    const agent = exec !== undefined && exec !== null ? exec.agent : undefined
+    const agentId = agent !== undefined && agent !== null && agent.id !== undefined ? String(agent.id) : ''
+    // Target chat: explicit chat_id > notify_chat_id config > caller's bound Feishu chat.
+    let chatId = botConfig.notify_chat_id ?? ''
+    let workspace = ''
+    let session = ''
+    if (agentId !== '') {
+      // If the caller agent is itself a Feishu-bound bot chat, notify back there.
+      for (const [k, entry] of chatAgents) {
+        if (entry !== undefined && entry.agent !== null && String(entry.agent.id) === agentId) {
+          chatId = chatId !== '' ? chatId : k
+          break
+        }
+      }
+      // Workspace/session labels: caller agent's own bound workspace if any.
+      try {
+        for (const w of ctx.workspaceRegistry.list()) {
+          const ids = w.sessionIds as readonly string[]
+          if (ids.includes(agentId as never)) {
+            workspace = w.title
+            const prefix = 'feishu-' + chatId + '-' + w.id + '-'
+            if (agentId.startsWith(prefix)) {
+              const key = parseInt(agentId.slice(prefix.length), 10)
+              if (!Number.isNaN(key)) session = '会话#' + (key + 1)
+            } else {
+              const idx = ids.indexOf(agentId as never)
+              if (idx >= 0) session = '会话#' + (idx + 1)
+            }
+            break
+          }
+        }
+      } catch (e) { /* keep labels empty */ }
+    }
+    return { chatId, workspace, session }
+  }
+
+  const notifyTool = defineTool({
+    name: 'lark_notify',
+    description: 'Send a notification to the Feishu/Lark bot chat from any DSH conversation (other sessions/agents can notify the user). ' +
+      'Format: [workspace]-[session]: [content]. The target defaults to the configured notify_chat_id (or the caller\'s bound Feishu chat). ' +
+      'Triggers: 通知我、发通知到飞书、飞书通知、notify me on Feishu.',
+    parameters: {
+      content: { type: 'string', description: 'Notification content (the [内容] part). Required.' },
+      workspace: { type: 'string', description: 'Workspace label (the [工作区] part). Optional; auto-detected from the caller when possible.' },
+      session: { type: 'string', description: 'Session label (the [对话] part). Optional; auto-detected from the caller when possible.' },
+      chat_id: { type: 'string', description: 'Target chat_id or open_id. Optional; defaults to notify_chat_id config or the caller\'s bound Feishu chat.' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, properties: {} },
+      render: renderJson,
+    },
+    execute: async (args: { content?: string; workspace?: string; session?: string; chat_id?: string }, exec: any) => {
+      if (!botConfig.app_id || !botConfig.app_secret) return { ok: false, error: 'not configured; use lark_configure first' }
+      const content = String(args.content ?? '').trim()
+      if (content === '') return { ok: false, error: 'content is required' }
+      const ctxInfo = notifyContext(exec)
+      const chatId = String(args.chat_id ?? '').trim() !== '' ? String(args.chat_id).trim() : ctxInfo.chatId
+      if (chatId === '') {
+        return { ok: false, error: 'no target chat: pass chat_id or set notify_chat_id in the config (lark_configure)' }
+      }
+      const workspace = String(args.workspace ?? '').trim() !== '' ? String(args.workspace).trim() : ctxInfo.workspace
+      const session = String(args.session ?? '').trim() !== '' ? String(args.session).trim() : ctxInfo.session
+      const label = '[' + (workspace !== '' ? workspace : '未命名工作区') + ']-[' + (session !== '' ? session : '未命名对话') + ']'
+      const text = label + '：' + content
+      try {
+        await sendToChat(chatId, text)
+        return { ok: true, chatId, text }
+      } catch (e) {
+        return { ok: false, error: String(e instanceof Error ? e.message : e) }
+      }
+    },
+  })
+
   // ---------- mount ----------
   if (enabled) {
     if (announce) {
@@ -820,7 +906,7 @@ export function apply(ctx: Context, config?: Config): void {
       return () => { for (const d of disposers) d() }
     }, 'dsh-feishu-bot: routes')
     ctx.effect(() => {
-      const disposers = [statusTool, configureTool, testTool].map((tool) => ctx.tools.register(tool))
+      const disposers = [statusTool, configureTool, testTool, notifyTool].map((tool) => ctx.tools.register(tool))
       return () => { for (const d of disposers) d() }
     }, 'dsh-feishu-bot: tools')
 
