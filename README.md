@@ -74,6 +74,24 @@ Each chat's current workspace/session is persisted in
 `~/.dsh/dsh-feishu-bot-state.json`; switching to an existing session restores
 its conversation history.
 
+## Bot custom menu
+
+Configure a custom menu for the bot in the Feishu/Lark developer console
+(event type `application.bot.menu_v6`). Set each menu item's **key** to one of
+the values below; clicking it runs the matching command (the reply goes to
+your DM):
+
+| Menu item key | Action |
+|---|---|
+| `new_workspace` / `新建工作区` | create a workspace (usage hint when no path) |
+| `new_session` / `新建会话` | create a new session in the current workspace |
+| `change_workspace` / `切换工作区` | list already-created workspaces |
+| `change_session` / `切换会话` | list the current workspace's sessions |
+| `help` / `帮助` | show the command list |
+
+After a menu click the bot lists the options; reply with the number in the DM
+to finish the switch (the reply reuses the menu-established state).
+
 ## Agent-driven configuration
 
 Copy this repo URL to any DSH agent: it reads this README and runs

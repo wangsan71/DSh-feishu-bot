@@ -65,6 +65,22 @@ dsh plugin --profile web add @areoneplayer/dsh-feishu-bot
 每个聊天（chat_id）的当前工作区/会话保存在 `~/.dsh/dsh-feishu-bot-state.json`；
 切换到已存在的会话会恢复其历史对话。
 
+## 机器人自定义菜单
+
+在飞书/Lark 开发者后台给机器人配置「自定义菜单」（事件类型 `application.bot.menu_v6`），
+菜单项的 **key** 用下面任一值，点击后机器人自动执行对应命令（回复发到你的单聊）：
+
+| 菜单项 key | 动作 |
+|---|---|
+| `new_workspace` / `新建工作区` | 新建工作区（无路径参数时提示用法） |
+| `new_session` / `新建会话` | 在当前工作区新建会话 |
+| `change_workspace` / `切换工作区` | 列出已创建的工作区 |
+| `change_session` / `切换会话` | 列出当前工作区的会话 |
+| `help` / `帮助` | 显示命令列表 |
+
+菜单点击后机器人先列出清单，你**在单聊里回复编号**即可完成切换（回复会沿用菜单建立的
+工作区/会话状态）。
+
 ## Agent 自动配置
 
 把本仓库 URL 复制给任意 DSH agent，它会读本 README 并依次执行：clone/install →
