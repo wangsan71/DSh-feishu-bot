@@ -5,13 +5,13 @@
  * - Long-connection (WebSocket) event receiving via the official SDK bridge
  *   subprocess (no public URL needed), domain auto-detected for both Feishu
  *   (open.feishu.cn) and Lark (open.larksuite.com).
- * - Per-chat DSH agent binding across workspaces/sessions, plus bot menu
- *   commands: NEW_WORKSPACE / NEW_SESSION / WORKSPACE_CHANGE / CHANGE_SESSION
+ * - Per-chat DSH agent binding across workspaces/sessions, plus chat commands:
+ *   NEW_WORKSPACE / NEW_SESSION / WORKSPACE_CHANGE / CHANGE_SESSION
  *   (switch session only within the current workspace; switch workspace only
  *   among already-created ones).
  * - Web routes (/feishu/event, /feishu/health, /feishu/api/*), agent tools
- *   (lark_status / lark_configure / lark_test), and a system-prompt
- *   announcement. The browser half (./client) renders the setup page.
+ *   (lark_status / lark_configure / lark_test / lark_notify), and a
+ *   system-prompt announcement. The browser half (./client) renders the setup page.
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -26,7 +26,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import * as https from 'node:https'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** Stable cordis plugin name. */
@@ -49,8 +49,8 @@ const SECTION_ORDER = 160
 const GUIDANCE =
   '本机已安装 dsh-feishu-bot 插件（飞书/Lark 机器人）：长连接（WebSocket）接收事件，无需公网 URL；' +
   '配置存 ~/.dsh/dsh-feishu-bot.json（app_id / app_secret / domain，domain 自动检测 feishu/lark 国内外通用）；' +
-  '机器人菜单命令：新建工作区 <路径> / 新建会话 / 切换工作区 / 切换会话（会话仅当前工作区内切换）；' +
-  '工具：lark_status 查看状态、lark_configure 写入配置并重启桥接、lark_test 验证凭据与连接、lark_notify 从任意对话向飞书发通知（格式 [工作区]-[对话]：[内容]）。' +
+  '对话命令：新建工作区 <路径> / 新建会话 / 切换工作区 / 切换会话（会话仅当前工作区内切换）；' +
+  '工具：lark_status 查看状态、lark_configure 写入配置并重启桥接、lark_test 验证凭据与连接、lark_notify 从任意对话向飞书发通知（格式 [工作区]-[对话]：[内容]）、lark_send_file 发送本地文件到飞书（≤30MB）。' +
   '限制：app_secret 明文存在用户主目录私有文件；对话消耗 API 额度；用户提到「飞书 / Lark / 机器人 / 扫码配机器人」时即指本插件。'
 
 /** Config file location: $DSH_HOME/dsh-feishu-bot.json (default ~/.dsh/...). */
@@ -91,8 +91,8 @@ function hostOf(domain: string): string {
   return domain === 'lark' ? LARK_HOST : FEISHU_HOST
 }
 
-/** Minimal JSON HTTPS POST helper. */
-function httpsJson(url: string, headers: Record<string, string>, body?: string): Promise<{ status: number; text: string }> {
+/** Minimal JSON HTTPS POST helper (also used for binary multipart bodies). */
+function httpsJson(url: string, headers: Record<string, string>, body?: string | Buffer): Promise<{ status: number; text: string }> {
   return new Promise((resolve, reject) => {
     let u: URL
     try { u = new URL(url) } catch (e) { reject(e); return }
@@ -258,6 +258,48 @@ export function apply(ctx: Context, config?: Config): void {
   function sendToChat(chatKey: string, text: string): Promise<void> {
     if (chatKey.startsWith('ou_')) return sendToOpenId(botConfig, chatKey, text)
     return sendText(botConfig, chatKey, text)
+  }
+
+  /**
+   * Upload a local file to Feishu/Lark and get its file_key.
+   * POST /open-apis/im/v1/files with multipart/form-data (file_type + file_name + file).
+   * Size limit: 30 MB, non-empty. Requires the im:resource permission.
+   */
+  async function uploadFile(c: BotConfig, fileName: string, fileBuffer: Buffer): Promise<string> {
+    if (fileBuffer.length === 0) throw new Error('empty file')
+    if (fileBuffer.length > 30 * 1024 * 1024) throw new Error('file exceeds 30 MB limit')
+    const t = await token(c)
+    const host = hostOf(c.domain ?? 'feishu')
+    const boundary = '----dsh-feishu-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+    const parts: Buffer[] = []
+    const field = (name: string, value: string): void => {
+      parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="' + name + '"\r\n\r\n' + value + '\r\n', 'utf8'))
+    }
+    field('file_type', 'stream')
+    field('file_name', fileName)
+    parts.push(Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="file"; filename="' + fileName.replace(/"/g, '') + '"\r\nContent-Type: application/octet-stream\r\n\r\n', 'utf8'))
+    parts.push(fileBuffer)
+    parts.push(Buffer.from('\r\n--' + boundary + '--\r\n', 'utf8'))
+    const body = Buffer.concat(parts)
+    const res = await httpsJson(host + '/open-apis/im/v1/files', {
+      Authorization: 'Bearer ' + t,
+      'Content-Type': 'multipart/form-data; boundary=' + boundary,
+    }, body as unknown as string)
+    const data = JSON.parse(res.text) as { code?: number; file_key?: string; msg?: string }
+    if (data.code !== 0 || !data.file_key) throw new Error('upload failed: ' + String(res.text).slice(0, 300))
+    return data.file_key
+  }
+
+  /** Send a file message (msg_type: file) to a chat or open_id. */
+  async function sendFileToChat(chatKey: string, fileName: string, fileBuffer: Buffer): Promise<void> {
+    const fileKey = await uploadFile(botConfig, fileName, fileBuffer)
+    const t = await token(botConfig)
+    const host = hostOf(botConfig.domain ?? 'feishu')
+    const receiveIdType = chatKey.startsWith('ou_') ? 'open_id' : 'chat_id'
+    const body = JSON.stringify({ receive_id: chatKey, msg_type: 'file', content: JSON.stringify({ file_key: fileKey }) })
+    const res = await httpsJson(host + '/open-apis/im/v1/messages?receive_id_type=' + receiveIdType, { Authorization: 'Bearer ' + t }, body)
+    const data = JSON.parse(res.text) as { code?: number }
+    if (data.code !== 0) console.error('[feishu-bot] sendFile failed: ' + String(res.text).slice(0, 300))
   }
 
   /** Render one question for Feishu (numbered options). */
@@ -491,32 +533,6 @@ export function apply(ctx: Context, config?: Config): void {
     return null
   }
 
-  /** Bot custom menu click (application.bot.menu_v6): map the menu key to a command. */
-  async function handleMenu(parsed: any): Promise<void> {
-    const ev = (parsed !== null && parsed.event) || {}
-    const rawKey = typeof ev.event_key === 'string' ? ev.event_key : ''
-    const key = rawKey.trim().toLowerCase()
-    const userId = ev.operator && ev.operator.operator_id && typeof ev.operator.operator_id.open_id === 'string' ? ev.operator.operator_id.open_id : ''
-    if (key === '' || userId === '') return
-    console.log('[feishu-bot] menu click key=' + key + ' user=' + userId)
-    let cmdText: string | null = null
-    if (key === 'new_session' || key === '新建会话') cmdText = 'new_session'
-    else if (key === 'new_workspace' || key === '新建工作区') cmdText = 'new_workspace'
-    else if (key === 'change_session' || key === '切换会话') cmdText = 'change_session'
-    else if (key === 'change_workspace' || key === '切换工作区') cmdText = 'change_workspace'
-    else if (key === 'help' || key === '帮助' || key === '菜单') cmdText = 'help'
-    if (cmdText === null) {
-      await sendToOpenId(botConfig, userId, '未知菜单项：' + rawKey + '\n可用：新建工作区 / 新建会话 / 切换工作区 / 切换会话 / 帮助')
-      return
-    }
-    try {
-      const reply = await handleCommand(userId, cmdText)
-      if (reply !== null) await sendToOpenId(botConfig, userId, reply)
-    } catch (e) {
-      console.error('[feishu-bot] menu handle error: ' + (e instanceof Error ? e.stack : String(e)))
-    }
-  }
-
   /** Interactive card button click (card.action.trigger): execute the switch. */
   async function handleCard(parsed: any): Promise<void> {
     const ev = (parsed !== null && parsed.event) || {}
@@ -572,8 +588,8 @@ export function apply(ctx: Context, config?: Config): void {
           void startBridge().catch(() => undefined)
         }
       }
-      // State key fallback: a text reply following a menu-click (menu events
-      // carry only the operator open_id) should see the menu-established state.
+      // State key fallback: a DM reply may arrive keyed by the sender open_id
+      // when the chat_id state has not been established yet.
       let stateKey = chatId
       if (botState[chatId] === undefined && senderOpenId !== '' && botState[senderOpenId] !== undefined) stateKey = senderOpenId
       // Agent question relay: if the agent is waiting for an answer, feed it.
@@ -659,11 +675,6 @@ export function apply(ctx: Context, config?: Config): void {
         return
       }
       const header = (parsed !== null && parsed.header) || {}
-      if (parsed !== null && parsed.type === 'menu') {
-        json(res, 200, { code: 0 })
-        void handleMenu(parsed).catch((e) => console.error('[feishu-bot] menu error: ' + String(e)))
-        return
-      }
       if (parsed !== null && parsed.type === 'card') {
         json(res, 200, { code: 0 })
         void handleCard(parsed).catch((e) => console.error('[feishu-bot] card error: ' + String(e)))
@@ -672,11 +683,6 @@ export function apply(ctx: Context, config?: Config): void {
       if (header.event_type === 'card.action.trigger') {
         json(res, 200, { code: 0 })
         void handleCard(parsed).catch((e) => console.error('[feishu-bot] card error: ' + String(e)))
-        return
-      }
-      if (header.event_type === 'application.bot.menu_v6') {
-        json(res, 200, { code: 0 })
-        void handleMenu(parsed).catch((e) => console.error('[feishu-bot] menu error: ' + String(e)))
         return
       }
       if (header.event_type === 'im.message.receive_v1') {
@@ -947,6 +953,54 @@ export function apply(ctx: Context, config?: Config): void {
     },
   })
 
+  const sendFileTool = defineTool({
+    name: 'lark_send_file',
+    description: 'Upload a local file and send it as a file message to the Feishu/Lark bot chat. ' +
+      'Reads the file from this machine, uploads to Feishu (max 30 MB), then sends msg_type=file. ' +
+      'Target defaults to the configured notify_chat_id (or the caller\'s bound Feishu chat). ' +
+      'Triggers: 发文件到飞书、发送档案、send file to Feishu, upload file to chat.',
+    parameters: {
+      local_path: { type: 'string', description: 'Absolute path of the local file on this machine. Required.' },
+      file_name: { type: 'string', description: 'Optional display file name; defaults to the local basename.' },
+      chat_id: { type: 'string', description: 'Target chat_id or open_id. Optional; defaults to notify_chat_id config or the caller\'s bound Feishu chat.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          chatId: { type: 'string', required: true },
+          fileName: { type: 'string', required: true },
+          fileKey: { type: 'string', required: true },
+          error: { type: 'string', required: true },
+        },
+      },
+      render: renderJson,
+    },
+    execute: async (args: { local_path?: string; file_name?: string; chat_id?: string }, exec: any) => {
+      if (!botConfig.app_id || !botConfig.app_secret) {
+        return { ok: false, chatId: '', fileName: '', fileKey: '', error: 'not configured; use lark_configure first' }
+      }
+      const localPath = String(args.local_path ?? '').trim()
+      if (localPath === '') return { ok: false, chatId: '', fileName: '', fileKey: '', error: 'local_path is required' }
+      const ctxInfo = notifyContext(exec)
+      const chatId = String(args.chat_id ?? '').trim() !== '' ? String(args.chat_id).trim() : ctxInfo.chatId
+      if (chatId === '') {
+        return { ok: false, chatId: '', fileName: '', fileKey: '', error: 'no target chat: pass chat_id or set notify_chat_id in the config (lark_configure)' }
+      }
+      const fileName = String(args.file_name ?? '').trim() !== '' ? String(args.file_name).trim() : basename(localPath)
+      try {
+        const fileBuffer = await readFile(localPath)
+        const fileKey = await uploadFile(botConfig, fileName, fileBuffer)
+        await sendFileToChat(chatId, fileName, fileBuffer)
+        return { ok: true, chatId, fileName, fileKey, error: '' }
+      } catch (e) {
+        return { ok: false, chatId, fileName, fileKey: '', error: String(e instanceof Error ? e.message : e) }
+      }
+    },
+  })
+
   // ---------- mount ----------
   if (enabled) {
     if (announce) {
@@ -962,7 +1016,7 @@ export function apply(ctx: Context, config?: Config): void {
       return () => { for (const d of disposers) d() }
     }, 'dsh-feishu-bot: routes')
     ctx.effect(() => {
-      const disposers = [statusTool, configureTool, testTool, notifyTool].map((tool) => ctx.tools.register(tool))
+      const disposers = [statusTool, configureTool, testTool, notifyTool, sendFileTool].map((tool) => ctx.tools.register(tool))
       return () => { for (const d of disposers) d() }
     }, 'dsh-feishu-bot: tools')
 

@@ -68,13 +68,6 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
     log('received text from chat ' + (msg.chat_id || ''))
     forward(data)
   },
-  // 机器人自定义菜单事件 v2.0：用户点击机器人菜单触发。
-  // 事件体只有 event_key（菜单项标识）和 operator.operator_id.open_id（点击者），
-  // 没有 chat_id，回复需发到 open_id（单聊 DM）。
-  'application.bot.menu_v6': async (data) => {
-    log('received bot menu event key=' + ((data && data.event_key) || '') + ' user=' + ((data && data.operator && data.operator.operator_id && data.operator.operator_id.open_id) || ''))
-    forwardMenu(data)
-  },
   // 交互卡片按钮点击（长连接模式下以事件送达）
   'card.action.trigger': async (data) => {
     log('received card action')
@@ -86,27 +79,6 @@ function forwardCard(data) {
   const payload = JSON.stringify({
     type: 'card',
     header: { event_type: 'card.action.trigger' },
-    event: data || {},
-  })
-  let u
-  try { u = new URL(forwardUrl) } catch (e) { err('bad forward url: ' + forwardUrl); return }
-  const body = Buffer.from(payload, 'utf8')
-  const req = http.request({
-    hostname: u.hostname,
-    port: u.port || 80,
-    path: u.pathname + (u.search || ''),
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': body.length },
-  }, (res) => { res.resume() })
-  req.on('error', (e) => err('forward error: ' + e.message))
-  req.write(body)
-  req.end()
-}
-
-function forwardMenu(data) {
-  const payload = JSON.stringify({
-    type: 'menu',
-    header: { event_type: 'application.bot.menu_v6' },
     event: data || {},
   })
   let u
