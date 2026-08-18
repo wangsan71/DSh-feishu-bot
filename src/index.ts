@@ -216,6 +216,16 @@ export function apply(ctx: Context, config?: Config): void {
     if (data.code !== 0) console.error('[feishu-bot] send failed: ' + String(res.text).slice(0, 300))
   }
 
+  /** Send a DM to a user open_id (menu events carry no chat_id). */
+  async function sendToOpenId(c: BotConfig, openId: string, text: string): Promise<void> {
+    const t = await token(c)
+    const host = hostOf(c.domain ?? 'feishu')
+    const body = JSON.stringify({ receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }) })
+    const res = await httpsJson(host + '/open-apis/im/v1/messages?receive_id_type=open_id', { Authorization: 'Bearer ' + t }, body)
+    const data = JSON.parse(res.text) as { code?: number }
+    if (data.code !== 0) console.error('[feishu-bot] sendToOpenId failed: ' + String(res.text).slice(0, 300))
+  }
+
   // ---------- bridge ----------
   function forwardUrl(): string {
     let port = 3080
@@ -405,6 +415,32 @@ export function apply(ctx: Context, config?: Config): void {
     return null
   }
 
+  /** Bot custom menu click (application.bot.menu_v6): map the menu key to a command. */
+  async function handleMenu(parsed: any): Promise<void> {
+    const ev = (parsed !== null && parsed.event) || {}
+    const rawKey = typeof ev.event_key === 'string' ? ev.event_key : ''
+    const key = rawKey.trim().toLowerCase()
+    const userId = ev.operator && ev.operator.operator_id && typeof ev.operator.operator_id.open_id === 'string' ? ev.operator.operator_id.open_id : ''
+    if (key === '' || userId === '') return
+    console.log('[feishu-bot] menu click key=' + key + ' user=' + userId)
+    let cmdText: string | null = null
+    if (key === 'new_session' || key === '新建会话') cmdText = 'new_session'
+    else if (key === 'new_workspace' || key === '新建工作区') cmdText = 'new_workspace'
+    else if (key === 'change_session' || key === '切换会话') cmdText = 'change_session'
+    else if (key === 'change_workspace' || key === '切换工作区') cmdText = 'change_workspace'
+    else if (key === 'help' || key === '帮助' || key === '菜单') cmdText = 'help'
+    if (cmdText === null) {
+      await sendToOpenId(botConfig, userId, '未知菜单项：' + rawKey + '\n可用：新建工作区 / 新建会话 / 切换工作区 / 切换会话 / 帮助')
+      return
+    }
+    try {
+      const reply = await handleCommand(userId, cmdText)
+      if (reply !== null) await sendToOpenId(botConfig, userId, reply)
+    } catch (e) {
+      console.error('[feishu-bot] menu handle error: ' + (e instanceof Error ? e.stack : String(e)))
+    }
+  }
+
   function extractReply(msgs: any[], before: number): string {
     let out = ''
     for (let i = before; i < msgs.length; i++) {
@@ -426,6 +462,8 @@ export function apply(ctx: Context, config?: Config): void {
     try { text = (JSON.parse(msg.content).text) || '' } catch (e) { text = typeof msg.content === 'string' ? msg.content : '' }
     text = String(text || '').trim()
     const chatId = typeof msg.chat_id === 'string' ? msg.chat_id : ''
+    const sender = ev.sender || {}
+    const senderOpenId = sender.sender_id && typeof sender.sender_id.open_id === 'string' ? sender.sender_id.open_id : ''
     if (text === '' || chatId === '') return
     console.log('[feishu-bot] message from ' + chatId + ': ' + text.slice(0, 100))
     try {
@@ -437,21 +475,26 @@ export function apply(ctx: Context, config?: Config): void {
           void startBridge().catch(() => undefined)
         }
       }
-      const cmdReply = await handleCommand(chatId, text)
+      // State key fallback: a text reply following a menu-click (menu events
+      // carry only the operator open_id) should see the menu-established state.
+      let key = chatId
+      let stateKey = chatId
+      if (botState[chatId] === undefined && senderOpenId !== '' && botState[senderOpenId] !== undefined) stateKey = senderOpenId
+      const cmdReply = await handleCommand(stateKey, text)
       if (cmdReply !== null) {
         await sendText(botConfig, chatId, cmdReply)
         return
       }
-      await ensureDefaultState(chatId)
-      let entry = chatAgents.get(chatId)
+      await ensureDefaultState(stateKey)
+      let entry = chatAgents.get(stateKey)
       if (entry === undefined || entry.agent === null) {
-        const st = botState[chatId]
+        const st = botState[stateKey]
         const ws = st !== undefined && st.workspaceId !== undefined ? ctx.workspaceRegistry.get(st.workspaceId as never) : undefined
         if (ws === undefined) return
-        const key = st.sessionKey !== undefined && st.sessionKey >= 0 ? st.sessionKey : 0
-        if (st.sessionKey === undefined || st.sessionKey < 0) { botState[chatId] = { workspaceId: st.workspaceId, sessionKey: 0 }; await saveState() }
-        await bindAgentSession(chatId, ws, chatSessionId(chatId, ws, key))
-        entry = chatAgents.get(chatId)
+        const sessionKey = st.sessionKey !== undefined && st.sessionKey >= 0 ? st.sessionKey : 0
+        if (st.sessionKey === undefined || st.sessionKey < 0) { botState[stateKey] = { workspaceId: st.workspaceId, sessionKey: 0 }; await saveState() }
+        await bindAgentSession(stateKey, ws, chatSessionId(stateKey, ws, sessionKey))
+        entry = chatAgents.get(stateKey)
       }
       if (entry === undefined) return
       const agent = entry.agent
@@ -513,6 +556,16 @@ export function apply(ctx: Context, config?: Config): void {
         return
       }
       const header = (parsed !== null && parsed.header) || {}
+      if (parsed !== null && parsed.type === 'menu') {
+        json(res, 200, { code: 0 })
+        void handleMenu(parsed).catch((e) => console.error('[feishu-bot] menu error: ' + String(e)))
+        return
+      }
+      if (header.event_type === 'application.bot.menu_v6') {
+        json(res, 200, { code: 0 })
+        void handleMenu(parsed).catch((e) => console.error('[feishu-bot] menu error: ' + String(e)))
+        return
+      }
       if (header.event_type === 'im.message.receive_v1') {
         const ev = parsed.event || {}
         const msg = ev.message || {}
