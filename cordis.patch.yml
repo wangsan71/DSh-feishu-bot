@@ -1,0 +1,14 @@
+# bundle patch for the dsh-feishu-bot plugin: inserts its plugin row into the
+# web profile roster. Applied as a profile bundle layer (the `dsh.bundle.patch`
+# manifest field); install with
+# `dsh plugin --profile web add git+https://github.com/wangsan71/DSh-feishu-bot.git`
+# (or `link:<this repo>` for local development).
+#
+# The row is a bare plugin by package name: the node half (exports ".") runs
+# in the host process (bot engine, /feishu/* routes, agent tools, the
+# long-connection bridge manager), and the `dsh.client` declaration in
+# package.json makes the browser half (exports "./client", served at
+# /plugins/<id>/client.js) load in the web GUI.
+- insert:
+    - id: feishu-bot
+      name: '@wangsan71/dsh-feishu-bot'
