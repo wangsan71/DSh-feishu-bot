@@ -154,7 +154,7 @@ export function apply(ctx: Context, config?: Config): void {
   // ---------- config ----------
   async function loadConfig(): Promise<BotConfig> {
     try {
-      const text = await readFile(configPath(), 'utf8')
+      const text = (await readFile(configPath(), 'utf8')).replace(/^\uFEFF/, '')
       botConfig = JSON.parse(text) as BotConfig
     } catch (e) {
       botConfig = {}
@@ -184,7 +184,7 @@ export function apply(ctx: Context, config?: Config): void {
 
   async function loadState(): Promise<void> {
     try {
-      const text = await readFile(statePath(), 'utf8')
+      const text = (await readFile(statePath(), 'utf8')).replace(/^\uFEFF/, '')
       const parsed = JSON.parse(text) as Record<string, ChatState>
       if (parsed !== null && typeof parsed === 'object') botState = parsed
     } catch (e) { botState = {} }
@@ -429,6 +429,14 @@ export function apply(ctx: Context, config?: Config): void {
     if (text === '' || chatId === '') return
     console.log('[feishu-bot] message from ' + chatId + ': ' + text.slice(0, 100))
     try {
+      // Self-heal: if the config was not loaded (e.g. a BOM/parse issue at
+      // startup), re-read it and start the bridge on first use.
+      if (!(botConfig.app_id && botConfig.app_secret)) {
+        await loadConfig()
+        if (botConfig.app_id && botConfig.app_secret && bridgeHandle === null && botConfig.websocket !== false) {
+          void startBridge().catch(() => undefined)
+        }
+      }
       const cmdReply = await handleCommand(chatId, text)
       if (cmdReply !== null) {
         await sendText(botConfig, chatId, cmdReply)
