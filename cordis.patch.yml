@@ -11,4 +11,4 @@
 # /plugins/<id>/client.js) load in the web GUI.
 - insert:
     - id: feishu-bot
-      name: '@wangsan71/dsh-feishu-bot'
+      name: '@areoneplayer/dsh-feishu-bot'

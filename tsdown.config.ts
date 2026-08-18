@@ -9,7 +9,7 @@
  */
 import { clientBundle } from './build/tsdown.client.ts'
 
-export default clientBundle('@wangsan71/dsh-feishu-bot', ['src/index.ts'], {
+export default clientBundle('@areoneplayer/dsh-feishu-bot', ['src/index.ts'], {
   libExternal: [
     '@deepseek-ai/dsh-agent',
     '@deepseek-ai/dsh-agent-default-model',
