@@ -436,7 +436,13 @@ export function apply(ctx: Context, config?: Config): void {
       sp.section({
         name: 'feishu-bot:locked-reply',
         order: SECTION_ORDER + 1,
-        text: '本会话已被锁定为飞书默认对话：用户期望你在飞书聊天里回复。若需要主动联系用户或发送通知/文件，使用 lark_notify / lark_send_file 工具发到当前飞书会话（notify_chat_id）。',
+        text:
+          '【飞书对话模式】本会话已锁定为飞书默认对话，你的回复会发到飞书聊天，请遵守：\n' +
+          '1. 回复必须简洁：用短句/要点，避免长段落与长篇报告；复杂细节可说明「已生成，需要可发文件」。\n' +
+          '2. 一切需要 DSh 能力执行的工作（读写文件、跑命令、搜索、代码、生成文档等）照常在 DSh 内完成，\n' +
+          '   然后把「结论 + 关键结果」简洁回复到飞书；不要把飞书当作执行环境。\n' +
+          '3. 需要主动推送结果/提醒时用 lark_notify；需要把生成的文件发过来时用 lark_send_file（≤30MB）。\n' +
+          '4. 长内容优先落成文件（如 txt/md/pdf）用 lark_send_file 发送，而不是在飞书里贴大段文字。',
       })
     } catch (e) {
       console.error('[feishu-bot] applyLockedContext failed: ' + String(e))
