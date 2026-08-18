@@ -744,7 +744,10 @@ export function apply(ctx: Context, config?: Config): void {
   }
 
   // ---------- tools ----------
-  const renderJson = (value: unknown): Array<{ type: 'text'; text: string }> => [{ type: 'text', text: JSON.stringify(value, null, 2) }]
+  // NOTE: the DSH tool contract calls render(args, value) with BOTH arguments;
+  // a single-arg render would serialize the (often empty) args object instead
+  // of the real tool value. Keep the two-arg signature.
+  const renderJson = (_args: unknown, value: unknown): Array<{ type: 'text'; text: string }> => [{ type: 'text', text: JSON.stringify(value, null, 2) }]
 
   const statusTool = defineTool({
     name: 'lark_status',
