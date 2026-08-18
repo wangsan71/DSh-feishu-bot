@@ -2,8 +2,14 @@
   "name": "@wangsan71/dsh-feishu-bot",
   "description": "Feishu/Lark AI bot for DSH: long-connection (WebSocket) event receiving, per-chat DSH agent binding and auto-reply, workspace/session menu commands (NEW_WORKSPACE / NEW_SESSION / WORKSPACE_CHANGE / CHANGE_SESSION), domain auto-detection for both Feishu (open.feishu.cn) and Lark (open.larksuite.com), agent tools (lark_status / lark_configure / lark_test) and a web setup page with a QR code to the developer console. No public URL needed — events flow over the official SDK long connection.",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wangsan71/DSh-feishu-bot.git"
+  },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
