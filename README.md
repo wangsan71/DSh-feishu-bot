@@ -32,6 +32,9 @@ dsh plugin --profile web add link:<this repo>
 
 # GitHub URL
 dsh plugin --profile web add git+https://github.com/wangsan71/DSh-feishu-bot.git
+
+# npm (after a release — pushing a vX.Y.Z tag auto-publishes)
+dsh plugin --profile web add @wangsan71/dsh-feishu-bot
 ```
 
 Restart `dsh web` after install (or follow the `dsh plugin` hot-mount hint). A

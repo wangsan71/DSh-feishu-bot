@@ -1,5 +1,5 @@
 ﻿# Bilingual-pair consistency record: the git blob hash of each side as of the
 # last confirmed-consistent state. After editing either side, bring the other
 # along and re-record with: git hash-object README.md / README.zh.md
-README.md: 050dac08248050223da22af89f19ef8a34de914b
-README.zh.md: 8f77189a86dfe42923489ef320671e0817fbd2ff
+README.md: 4352f65d68fd2049b4e8d11a90b0ce24e46257bb
+README.zh.md: f2ace10622ab01c215e4089afe81b026140c0322
