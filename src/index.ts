@@ -145,6 +145,8 @@ export function apply(ctx: Context, config?: Config): void {
   const chatLocks = new Map<string, Promise<unknown>>()
   const handles: any[] = []
   let bridgeHandle: any = null
+  let bridgeRestartTimer: ReturnType<typeof setTimeout> | null = null
+  let disposed = false
   let tokenCache: { token: string; expiresAt: number } = { token: '', expiresAt: 0 }
   let botConfig: BotConfig = {}
   let botState: Record<string, ChatState> = {}
@@ -240,6 +242,15 @@ export function apply(ctx: Context, config?: Config): void {
       })
       bridgeHandle.done.then((o: { exitCode: number | null }) => {
         console.error('[feishu-bot] bridge exited: code=' + o.exitCode)
+        // Watchdog: if the bridge process died and the plugin is still up,
+        // respawn it after a short delay so the bot self-heals.
+        if (!disposed && botConfig.websocket !== false && botConfig.app_id && botConfig.app_secret) {
+          bridgeRestartTimer = setTimeout(() => {
+            bridgeRestartTimer = null
+            bridgeHandle = null
+            void startBridge().catch(() => undefined)
+          }, 5000)
+        }
       })
       console.log('[feishu-bot] bridge started (domain=' + (c.domain ?? 'feishu') + ')')
     } catch (e) {
@@ -651,6 +662,8 @@ export function apply(ctx: Context, config?: Config): void {
     }, 'dsh-feishu-bot: tools')
     ctx.effect(() => {
       return () => {
+        disposed = true
+        if (bridgeRestartTimer !== null) { clearTimeout(bridgeRestartTimer); bridgeRestartTimer = null }
         if (bridgeHandle !== null) { try { bridgeHandle.terminate() } catch (e) { /* ignore */ } }
         for (const h of handles) { try { void h.dispose() } catch (e) { /* ignore */ } }
         handles.length = 0
