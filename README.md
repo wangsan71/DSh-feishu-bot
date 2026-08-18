@@ -27,7 +27,8 @@ no public URL, no tunnel required.
   question (with numbered options) is forwarded to Feishu; your reply is the answer.
 - **Cross-chat notifications**: any DSH conversation can call `lark_notify` to
   push a notification to Feishu (`[workspace]-[session]: [content]`; target
-  defaults to `notify_chat_id`, see the init doc).
+  defaults to `notify_chat_id`, see the init doc). For shell use
+  `node scripts/send-notify.cjs --text "hi"` (UTF-8 safe).
 
 > 📖 **Docs**: [初始化文档.md](初始化文档.md) (setup from scratch) ·
 > [交接文档.md](交接文档.md) (maintainers: architecture, official dev format,

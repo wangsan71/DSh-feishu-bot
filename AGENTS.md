@@ -25,6 +25,9 @@ DSH 的飞书/Lark 机器人插件（独立个人仓库）：长连接（WebSock
   会 Invalid URL）；agent 创建必须注入默认 provider/model（否则回合被 pre-step 拒绝）；
   工具 `lark_status` / `lark_configure` / `lark_test` / `lark_notify`（任意 DSH 对话
   向飞书发通知，格式 `[工作区]-[对话]：[内容]`，目标默认取配置 `notify_chat_id`）。
+- **编码纪律**：向飞书发中文通知**只走两条路**——`lark_notify` 工具或
+  `scripts/send-notify.cjs`（Node 全程 UTF-8）。**严禁**用 PowerShell 5.1
+  `Invoke-RestMethod` 手写发送（中文会变 `?????`）。
 - 菜单命令：`新建工作区 <路径>` / `新建会话` / `切换工作区 [编号]` / `切换会话 [编号]`
   （会话仅当前工作区内切换，工作区仅已创建；经 `workspaceRegistry` + `agents.resume`）。
 - 交互卡片：`change_session` / `change_workspace`（无参数时）发送交互卡片（按钮携带
