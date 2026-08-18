@@ -750,6 +750,62 @@ export function apply(ctx: Context, config?: Config): void {
     }
   }
 
+  /**
+   * Parse a feishu-bound session id "feishu-<chatId>-<wsId>-<key>" (or the
+   * shorter "feishu-<chatId>") into the Lark chat_id / open_id. Returns ''
+   * for non-feishu sessions.
+   */
+  function chatIdFromSession(sessionId: string): string {
+    if (!sessionId || !sessionId.startsWith('feishu-')) return ''
+    const parts = sessionId.slice('feishu-'.length).split('-')
+    for (let i = 1; i <= parts.length - 1; i++) {
+      const maybeWs = parts[i]
+      if (maybeWs !== undefined && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(maybeWs)) {
+        return parts.slice(0, i).join('-')
+      }
+    }
+    return parts[0] ?? ''
+  }
+
+  /** GET /feishu/api/lock-status?sessionId=... — is this session locked as the notify default? */
+  async function lockStatusApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const sessionId = url.searchParams.get('sessionId') ?? ''
+    const isFeishu = sessionId.startsWith('feishu-')
+    const chatId = isFeishu ? chatIdFromSession(sessionId) : ''
+    const current = botConfig.notify_chat_id ?? ''
+    json(res, 200, { locked: isFeishu && current === chatId, chatId, isFeishu, error: '', notifyChatId: current })
+  }
+
+  /** POST /feishu/api/lock-set { sessionId, lock } — set/clear the notify default chat. */
+  async function lockSetApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const body = await readBody(req)
+      const parsed = JSON.parse(body) as { sessionId?: string; lock?: boolean }
+      const sessionId = String(parsed.sessionId ?? '')
+      const lock = parsed.lock === true
+      const isFeishu = sessionId.startsWith('feishu-')
+      if (!isFeishu) {
+        json(res, 200, { locked: false, chatId: '', isFeishu, error: '当前会话不是飞书会话（id 以 feishu- 开头）' })
+        return
+      }
+      const chatId = chatIdFromSession(sessionId)
+      if (chatId === '') {
+        json(res, 200, { locked: false, chatId: '', isFeishu, error: '无法从会话 id 解析飞书 chat_id' })
+        return
+      }
+      if (lock) {
+        botConfig.notify_chat_id = chatId
+      } else {
+        delete botConfig.notify_chat_id
+      }
+      await saveConfig()
+      json(res, 200, { locked: lock, chatId, isFeishu, error: '', notifyChatId: botConfig.notify_chat_id ?? '' })
+    } catch (e) {
+      json(res, 400, { ok: false, error: String(e) })
+    }
+  }
+
   // ---------- tools ----------
   // NOTE: the DSH tool contract calls render(args, value) with BOTH arguments;
   // a single-arg render would serialize the (often empty) args object instead
@@ -1013,6 +1069,8 @@ export function apply(ctx: Context, config?: Config): void {
         ctx.webServer.register({ kind: 'exact', path: '/feishu/health', handler: healthHandler }),
         ctx.webServer.register({ kind: 'exact', path: '/feishu/api/status', handler: statusApi }),
         ctx.webServer.register({ kind: 'exact', path: '/feishu/api/config', handler: configApi }),
+        ctx.webServer.register({ kind: 'exact', path: '/feishu/api/lock-status', handler: lockStatusApi }),
+        ctx.webServer.register({ kind: 'exact', path: '/feishu/api/lock-set', handler: lockSetApi }),
       ]
       return () => { for (const d of disposers) d() }
     }, 'dsh-feishu-bot: routes')

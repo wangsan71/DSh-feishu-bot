@@ -11,6 +11,9 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 // name the 'settings.*' holes).
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+// Type-only: declares the conversation-session header slots
+// ('conversation.session.header.utilities' etc.).
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import * as React from 'react'
 
 /** Required services. */
@@ -127,6 +130,81 @@ function SetupPanel(): React.ReactElement {
 }
 
 /**
+ * Session-header "⋯" menu: lock/unlock the current Feishu session as the
+ * default notification chat. Persisted host-side via /feishu/api/lock-*.
+ */
+function LockMenu(props: { sessionId?: string }): React.ReactElement {
+  const sessionId = props.sessionId ? String(props.sessionId) : ''
+  const [open, setOpen] = React.useState(false)
+  const [state, setState] = React.useState({ loading: true, locked: false, chatId: '', error: '', isFeishu: false })
+
+  function refresh(): void {
+    setState((s) => ({ ...s, loading: true }))
+    void fetch('/feishu/api/lock-status?sessionId=' + encodeURIComponent(sessionId)).then((r) => r.json()).then((v: Record<string, unknown>) => {
+      setState({ loading: false, locked: v.locked === true, chatId: String(v.chatId ?? ''), error: String(v.error ?? ''), isFeishu: v.isFeishu === true })
+    }).catch((e: unknown) => setState((s) => ({ ...s, loading: false, error: String(e) })))
+  }
+
+  React.useEffect(() => { refresh() }, [sessionId])
+
+  function toggle(): void {
+    setOpen(false)
+    setState((s) => ({ ...s, loading: true }))
+    void fetch('/feishu/api/lock-set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, lock: !state.locked }),
+    }).then((r) => r.json()).then((v: Record<string, unknown>) => {
+      setState({ loading: false, locked: v.locked === true, chatId: String(v.chatId ?? ''), error: String(v.error ?? ''), isFeishu: v.isFeishu === true })
+    }).catch((e: unknown) => setState((s) => ({ ...s, loading: false, error: String(e) })))
+  }
+
+  const isFeishu = state.isFeishu
+  const label = isFeishu ? (state.locked ? '已锁飞书 ✓' : '锁飞书') : '飞书'
+  const button = React.createElement('button', {
+    key: 'btn',
+    onClick: () => { if (isFeishu || state.error !== '') setOpen(!open) },
+    title: '飞书默认对话设置\n' + (state.error !== '' ? state.error : isFeishu ? '当前会话为飞书会话' : '当前会话非飞书会话'),
+    style: {
+      border: '1px solid ' + (state.locked ? '#2e7d32' : '#c0c0c0'),
+      borderRadius: 6,
+      background: state.locked ? '#e8f5e9' : 'transparent',
+      color: state.locked ? '#1b5e20' : '#666',
+      fontSize: 12,
+      padding: '2px 9px',
+      cursor: 'pointer',
+      whiteSpace: 'nowrap',
+    },
+  }, state.loading ? '…' : label)
+
+  if (!open) return button
+  const menuItem = (disabled: boolean): React.CSSProperties => ({
+    padding: '8px 12px', fontSize: 13, cursor: disabled ? 'default' : 'pointer',
+    color: disabled ? '#999' : '#222', whiteSpace: 'nowrap',
+  })
+  return React.createElement('div', { key: 'wrap', style: { position: 'relative', display: 'inline-block' } }, [
+    button,
+    React.createElement('div', {
+      key: 'menu',
+      style: {
+        position: 'absolute', right: 0, top: '100%', zIndex: 1000,
+        background: '#fff', border: '1px solid #ddd', borderRadius: 8,
+        boxShadow: '0 4px 12px rgba(0,0,0,0.15)', minWidth: 230, padding: '4px 0',
+      },
+    }, [
+      React.createElement('div', { key: 'h', style: menuItem(true) }, isFeishu ? ('会话 ' + shortChat(state.chatId)) : '（当前会话非飞书会话）'),
+      React.createElement('div', { key: 'a', onClick: toggle, style: menuItem(false) }, isFeishu ? (state.locked ? '解除飞书默认锁定' : '锁定为飞书默认对话') : '仅飞书会话可用'),
+      state.error !== '' ? React.createElement('div', { key: 'e', style: { padding: '6px 12px', fontSize: 11, color: '#c62828' } }, state.error) : null,
+    ]),
+  ])
+
+  function shortChat(id: string): string {
+    if (!id) return ''
+    return id.length > 18 ? id.slice(0, 8) + '…' + id.slice(-6) : id
+  }
+}
+
+/**
  * Mount the setup card into the plugin-configuration section.
  * @param ctx - client root context (slots service).
  */
@@ -137,6 +215,10 @@ export function apply(ctx: ClientContext): void {
     slots.inject('settings.plugins.tab', () => slots.register(
       { name: 'settings.plugins.tab', id: 'feishu-bot', order: 70, label: 'Feishu/Lark Bot' },
       () => React.createElement(SetupPanel),
+    ))
+    slots.inject('conversation.session.header.utilities', () => slots.register(
+      { name: 'conversation.session.header.utilities', id: 'feishu-lock-menu', order: 20, label: '飞书' },
+      (props: { sessionId?: string }) => React.createElement(LockMenu, { sessionId: props.sessionId }),
     ))
   } catch (error) {
     console.warn('[dsh-feishu-bot] setup page mount failed:', error)
