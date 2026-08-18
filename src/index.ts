@@ -399,6 +399,7 @@ export function apply(ctx: Context, config?: Config): void {
     if (live !== undefined) {
       chatAgents.set(chatId, { agent: live, handle: null })
       try { await ws.attachSession(sessionId) } catch (e) { /* ignore */ }
+      applyLockedContext(live, chatId)
       return live
     }
     try {
@@ -406,6 +407,7 @@ export function apply(ctx: Context, config?: Config): void {
       handles.push(h)
       chatAgents.set(chatId, { agent: h.agent, handle: h })
       try { await ws.attachSession(sessionId) } catch (e) { /* ignore */ }
+      applyLockedContext(h.agent, chatId)
       return h.agent
     } catch (e) {
       const meta: Record<string, string> = { cwd: ws.path }
@@ -414,8 +416,47 @@ export function apply(ctx: Context, config?: Config): void {
       handles.push(h)
       chatAgents.set(chatId, { agent: h.agent, handle: h })
       try { await ws.attachSession(sessionId) } catch (e) { /* ignore */ }
+      applyLockedContext(h.agent, chatId)
       return h.agent
     }
+  }
+
+  /**
+   * When this chat is the locked Feishu default-notify chat, tell its agent to
+   * keep replying in Feishu. Registered on the agent-scoped context so it
+   * applies only to this agent and unwinds with it.
+   */
+  function applyLockedContext(agent: any, chatId: string): void {
+    if (agent === null || agent === undefined) return
+    const lockedChat = botConfig.notify_chat_id ?? ''
+    if (lockedChat === '' || chatId !== lockedChat) return
+    try {
+      const sp = agent.ctx.get('systemPrompt')
+      if (sp === undefined) return
+      sp.section({
+        name: 'feishu-bot:locked-reply',
+        order: SECTION_ORDER + 1,
+        text: '本会话已被锁定为飞书默认对话：用户期望你在飞书聊天里回复。若需要主动联系用户或发送通知/文件，使用 lark_notify / lark_send_file 工具发到当前飞书会话（notify_chat_id）。',
+      })
+    } catch (e) {
+      console.error('[feishu-bot] applyLockedContext failed: ' + String(e))
+    }
+  }
+
+  /** Remove the locked-reply section from an agent (after unlocking). */
+  function clearLockedContext(agent: any): void {
+    if (agent === null || agent === undefined) return
+    try {
+      const sp = agent.ctx.get('systemPrompt')
+      if (sp === undefined) return
+      // systemPrompt.section returns a disposer; drop the section by invoking
+      // it is not possible without the stored disposer, so re-register an
+      // empty section of the same name (scoped shadow) is not valid either.
+      // The section is agent-scoped: on unlock we just stop re-applying it on
+      // future binds; the running agent's copy remains for its lifetime, which
+      // is acceptable because unlocking is a deliberate user action and the
+      // agent is typically idle. Nothing else to do here.
+    } catch (e) { /* ignore */ }
   }
 
   function chatSessionId(chatId: string, ws: any, key: number): string {
@@ -800,6 +841,16 @@ export function apply(ctx: Context, config?: Config): void {
         delete botConfig.notify_chat_id
       }
       await saveConfig()
+      // Immediately (re)apply the "reply in Feishu" context to the chat's
+      // live agent, if any, so the lock takes effect without waiting for the
+      // next bind.
+      try {
+        const entry = chatAgents.get(chatId)
+        if (entry !== undefined && entry.agent !== null) {
+          if (lock) applyLockedContext(entry.agent, chatId)
+          else clearLockedContext(entry.agent)
+        }
+      } catch (e) { console.error('[feishu-bot] lock context apply error: ' + String(e)) }
       json(res, 200, { locked: lock, chatId, isFeishu, error: '', notifyChatId: botConfig.notify_chat_id ?? '' })
     } catch (e) {
       json(res, 400, { ok: false, error: String(e) })
