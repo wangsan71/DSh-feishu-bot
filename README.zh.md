@@ -27,9 +27,6 @@ dsh plugin --profile web add link:<本仓库路径>
 
 # GitHub 地址
 dsh plugin --profile web add git+https://github.com/wangsan71/DSh-feishu-bot.git
-
-# npm（发版后，推 vX.Y.Z tag 自动发布）
-dsh plugin --profile web add @wangsan71/dsh-feishu-bot
 ```
 
 安装后重启 `dsh web`（或按 `dsh plugin` 提示热挂载）。侧边栏 设置 → 插件 里应出现
