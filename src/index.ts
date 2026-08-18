@@ -304,7 +304,16 @@ export function apply(ctx: Context, config?: Config): void {
       bridgeHandle = ctx.subprocess.spawn({
         argv: [node, bridgePath],
         cwd: dirname(bridgePath),
-        stdio: { stdin: 'ignore', stdout: 'inherit', stderr: 'inherit' },
+        // stdout/stderr are collected (bounded) instead of inherited: the
+        // bridge appends everything to ~/.dsh/dsh-feishu-bot/bridge.log
+        // itself, and inheriting would flood the dsh web console with SDK
+        // info logs (and garble their Chinese under the Windows GBK console).
+        // Check the log file for diagnostics.
+        stdio: {
+          stdin: 'ignore',
+          stdout: { maxBytes: 512 * 1024 },
+          stderr: { maxBytes: 512 * 1024 },
+        },
         graceMs: 5000,
         env: {
           FEISHU_APP_ID: c.app_id ?? '',
@@ -743,7 +752,18 @@ export function apply(ctx: Context, config?: Config): void {
       'Triggers: 飞书/Lark 机器人状态、机器人配置、查看机器人是否在线.',
     parameters: {},
     output: {
-      schema: { type: 'object', additionalProperties: true },
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          configured: { type: 'boolean', required: true },
+          domain: { type: 'string', required: true },
+          websocketEnabled: { type: 'boolean', required: true },
+          agentCount: { type: 'integer', required: true },
+          bridgeRunning: { type: 'boolean', required: true },
+          configPath: { type: 'string', required: true },
+        },
+      },
       render: renderJson,
     },
     execute: async () => ({
@@ -768,7 +788,16 @@ export function apply(ctx: Context, config?: Config): void {
       notify_chat_id: { type: 'string', description: 'Default chat_id/open_id for lark_notify notifications from other DSH conversations.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: true },
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          domain: { type: 'string', required: true },
+          configured: { type: 'boolean', required: true },
+          bridgeRunning: { type: 'boolean', required: true },
+        },
+      },
       render: renderJson,
     },
     execute: async (args: { app_id?: string; app_secret?: string; domain?: string; cwd?: string; notify_chat_id?: string }) => {
@@ -796,7 +825,18 @@ export function apply(ctx: Context, config?: Config): void {
       'Triggers: 测试飞书/Lark 机器人、验证凭据、为什么机器人没回复.',
     parameters: {},
     output: {
-      schema: { type: 'object', additionalProperties: true },
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          domain: { type: 'string', required: true },
+          tokenOk: { type: 'boolean', required: true },
+          bridgeRunning: { type: 'boolean', required: true },
+          agentCount: { type: 'integer', required: true },
+          error: { type: 'string', required: true },
+        },
+      },
       render: renderJson,
     },
     execute: async () => {
@@ -868,7 +908,16 @@ export function apply(ctx: Context, config?: Config): void {
       chat_id: { type: 'string', description: 'Target chat_id or open_id. Optional; defaults to notify_chat_id config or the caller\'s bound Feishu chat.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: true },
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          chatId: { type: 'string', required: true },
+          text: { type: 'string', required: true },
+          error: { type: 'string', required: true },
+        },
+      },
       render: renderJson,
     },
     execute: async (args: { content?: string; workspace?: string; session?: string; chat_id?: string }, exec: any) => {
@@ -916,8 +965,29 @@ export function apply(ctx: Context, config?: Config): void {
 
     // Agent question relay: when the DSH agent asks the user a question
     // (ask_user_question), send it to the Feishu chat and wait for the reply.
+    //
+    // The user-questions service is a singleton: only one provider may be
+    // active per context. In the `web` profile, `@deepseek-ai/dsh-host-apiproxy`
+    // (bundled via @deepseek-ai/dsh-web-app) registers the Web UI provider
+    // first; we must defer to it instead of throwing DUPLICATE_PROVIDER, or
+    // the whole profile fails to boot. Headless / CLI profiles still get
+    // the Feishu relay because no other provider is registered.
     const uq = ctx.get('userQuestions')
-    if (uq !== undefined) {
+    // Skip our user-questions provider registration when the host is already
+    // running a Web UI profile. The api-gateway entry (from
+    // @deepseek-ai/dsh-web-app) registers its own provider during apply, and
+    // dsh-user-questions is a strict singleton — a duplicate registerProvider
+    // throws DUPLICATE_PROVIDER and the whole profile fails to boot. The
+    // Web UI's provider already serves the browser, so the Feishu question
+    // relay is a no-op in Web mode anyway.
+    //
+    // Detection: try the apiProxy service first; fall back to the
+    // DSH_PROFILE env var because cordis may not have the service fiber
+    // active yet at the moment feishu-bot's apply runs.
+    let webProfile = false
+    try { if (ctx.get('apiProxy') !== undefined) webProfile = true } catch (e) { /* not provided yet */ }
+    if (!webProfile && (process.env.DSH_PROFILE === 'web' || process.argv.includes('web'))) webProfile = true
+    if (uq !== undefined && !webProfile) {
       ctx.effect(() => uq.registerProvider({
         ask: async (request: any) => {
           const agent = request && request.agent
@@ -939,6 +1009,8 @@ export function apply(ctx: Context, config?: Config): void {
           return { answers }
         },
       }), 'dsh-feishu-bot: user-questions')
+    } else if (uq !== undefined) {
+      console.warn('[feishu-bot] skipping user-questions provider registration: Web profile detected (api-gateway already provides the Web UI user-questions handler). The Feishu question relay is only active in headless / CLI profiles.')
     }
 
     ctx.effect(() => {
