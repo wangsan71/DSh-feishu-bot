@@ -2,3 +2,7 @@ node_modules/
 lib/
 
 .npmrc
+
+# pnpm artifacts (this repo is npm-based; pnpm files are noise)
+pnpm-lock.yaml
+pnpm-workspace.yaml
