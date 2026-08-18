@@ -18,6 +18,7 @@ export default clientBundle('@areoneplayer/dsh-feishu-bot', ['src/index.ts'], {
     '@deepseek-ai/dsh-subprocess',
     '@deepseek-ai/dsh-system-prompt',
     '@deepseek-ai/dsh-tools',
+    '@deepseek-ai/dsh-user-questions',
     '@deepseek-ai/dsh-workspace',
   ],
 })

@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 export const name = 'feishu-bot'
 
 /** Services required before the bot surfaces can mount. */
-export const inject = ['webServer', 'agents', 'subprocess', 'agentDefaultModel', 'tools', 'systemPrompt', 'workspaceRegistry']
+export const inject = ['webServer', 'agents', 'subprocess', 'agentDefaultModel', 'tools', 'systemPrompt', 'workspaceRegistry', 'userQuestions']
 
 /** Plugin config (schema defaults applied by the loader). */
 export interface Config {
@@ -144,6 +144,8 @@ export function apply(ctx: Context, config?: Config): void {
   const chatAgents = new Map<string, { agent: any; handle: any }>()
   const chatLocks = new Map<string, Promise<unknown>>()
   const handles: any[] = []
+  /** Per-chat pending user question (agent ask relay). */
+  const pendingQuestions = new Map<string, { resolve: (v: string) => void; reject: (e: unknown) => void; qid: string }>()
   let bridgeHandle: any = null
   let bridgeRestartTimer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
@@ -224,6 +226,65 @@ export function apply(ctx: Context, config?: Config): void {
     const res = await httpsJson(host + '/open-apis/im/v1/messages?receive_id_type=open_id', { Authorization: 'Bearer ' + t }, body)
     const data = JSON.parse(res.text) as { code?: number }
     if (data.code !== 0) console.error('[feishu-bot] sendToOpenId failed: ' + String(res.text).slice(0, 300))
+  }
+
+  /** Send an interactive card (msg_type: interactive) to a chat (chat_id or open_id). */
+  async function sendCard(c: BotConfig, chatKey: string, title: string, markdown: string, buttons: Array<{ content: string; value: Record<string, string> }>): Promise<void> {
+    const t = await token(c)
+    const host = hostOf(c.domain ?? 'feishu')
+    const card: Record<string, unknown> = {
+      config: { wide_screen_mode: true },
+      header: { title: { tag: 'plain_text', content: title } },
+      elements: [
+        { tag: 'div', text: { tag: 'lark_md', content: markdown } },
+      ],
+    }
+    if (buttons.length > 0) {
+      card.elements = [
+        { tag: 'div', text: { tag: 'lark_md', content: markdown } },
+        { tag: 'action', actions: buttons.map((b) => ({ tag: 'button', text: { tag: 'plain_text', content: b.content }, value: b.value })) },
+      ]
+    }
+    const receiveIdType = chatKey.startsWith('ou_') ? 'open_id' : 'chat_id'
+    const body = JSON.stringify({ receive_id: chatKey, msg_type: 'interactive', content: JSON.stringify(card) })
+    const res = await httpsJson(host + '/open-apis/im/v1/messages?receive_id_type=' + receiveIdType, { Authorization: 'Bearer ' + t }, body)
+    const data = JSON.parse(res.text) as { code?: number }
+    if (data.code !== 0) console.error('[feishu-bot] sendCard failed: ' + String(res.text).slice(0, 300))
+  }
+
+  /** Send to a chat key that may be a chat_id or an open_id. */
+  function sendToChat(chatKey: string, text: string): Promise<void> {
+    if (chatKey.startsWith('ou_')) return sendToOpenId(botConfig, chatKey, text)
+    return sendText(botConfig, chatKey, text)
+  }
+
+  /** Render one question for Feishu (numbered options). */
+  function renderQuestion(q: any): string {
+    let text = '【DSH 提问】' + (typeof q.header === 'string' && q.header !== '' ? ' ' + q.header : '') + '\n' + String(q.question ?? '')
+    if (typeof q.detail === 'string' && q.detail !== '') text += '\n' + q.detail
+    if (Array.isArray(q.options) && q.options.length > 0) {
+      text += '\n请回复编号：'
+      text += q.options.map((o: any, i: number) => (i + 1) + '. ' + String(o.label ?? '')).join('\n')
+    }
+    return text
+  }
+
+  /** Wait for one free-text answer from the chat. */
+  function askOne(chatKey: string, signal: AbortSignal | undefined): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const entry: { resolve: (v: string) => void; reject: (e: unknown) => void; qid: string } = { resolve: () => undefined, reject: () => undefined, qid: '' }
+      pendingQuestions.set(chatKey, entry)
+      const timer = setTimeout(() => {
+        if (pendingQuestions.get(chatKey) === entry) pendingQuestions.delete(chatKey)
+        reject(new Error('question timed out'))
+      }, 300000)
+      entry.resolve = (value: string) => { clearTimeout(timer); resolve(value) }
+      entry.reject = (e: unknown) => { clearTimeout(timer); reject(e) }
+      const onAbort = () => { clearTimeout(timer); reject(new Error('question aborted')) }
+      if (signal !== undefined && typeof signal.addEventListener === 'function') {
+        signal.addEventListener('abort', onAbort, { once: true })
+      }
+    })
   }
 
   // ---------- bridge ----------
@@ -367,6 +428,8 @@ export function apply(ctx: Context, config?: Config): void {
       const arg = args[0]
       if (arg === undefined) {
         const list = workspaces.map((w, i) => (i + 1) + '. ' + w.title + '（' + w.path + '）').join('\n')
+        const buttons = workspaces.map((w, i) => ({ content: w.title, value: { dsh_action: 'switch_workspace', index: String(i + 1) } }))
+        void sendCard(botConfig, chatId, '切换工作区', '点击按钮切换（或直接回复编号）：', buttons).catch(() => undefined)
         return '现有工作区：\n' + list + '\n回复「切换工作区 <编号/路径>」切换'
       }
       const ws = matchWorkspace(workspaces, arg)
@@ -391,6 +454,8 @@ export function apply(ctx: Context, config?: Config): void {
       if (sessions.length === 0) return '工作区「' + ws.title + '」还没有会话，先：新建会话'
       if (arg === undefined) {
         const list = sessions.map((id, i) => (i + 1) + '. 会话#' + (parseInt(String(id).slice(prefix.length), 10) + 1)).join('\n')
+        const buttons = sessions.map((id, i) => ({ content: '会话#' + (parseInt(String(id).slice(prefix.length), 10) + 1), value: { dsh_action: 'switch_session', index: String(i + 1) } }))
+        void sendCard(botConfig, chatId, '切换会话（' + ws.title + '）', '点击按钮切换（或直接回复编号）：', buttons).catch(() => undefined)
         return '工作区「' + ws.title + '」的会话：\n' + list + '\n回复「切换会话 <编号>」切换'
       }
       let sessionId: string | null = null
@@ -441,6 +506,27 @@ export function apply(ctx: Context, config?: Config): void {
     }
   }
 
+  /** Interactive card button click (card.action.trigger): execute the switch. */
+  async function handleCard(parsed: any): Promise<void> {
+    const ev = (parsed !== null && parsed.event) || {}
+    const action = ev.action || {}
+    const value = action.value || {}
+    const chatId = ev.context && typeof ev.context.open_chat_id === 'string' ? ev.context.open_chat_id : ''
+    if (chatId === '' || value.dsh_action === undefined) return
+    console.log('[feishu-bot] card action=' + value.dsh_action + ' index=' + String(value.index ?? ''))
+    try {
+      let reply: string | null = null
+      if (value.dsh_action === 'switch_session') {
+        reply = await handleCommand(chatId, 'change_session ' + String(value.index ?? ''))
+      } else if (value.dsh_action === 'switch_workspace') {
+        reply = await handleCommand(chatId, 'change_workspace ' + String(value.index ?? ''))
+      }
+      if (reply !== null) await sendText(botConfig, chatId, reply)
+    } catch (e) {
+      console.error('[feishu-bot] card handle error: ' + (e instanceof Error ? e.stack : String(e)))
+    }
+  }
+
   function extractReply(msgs: any[], before: number): string {
     let out = ''
     for (let i = before; i < msgs.length; i++) {
@@ -477,9 +563,15 @@ export function apply(ctx: Context, config?: Config): void {
       }
       // State key fallback: a text reply following a menu-click (menu events
       // carry only the operator open_id) should see the menu-established state.
-      let key = chatId
       let stateKey = chatId
       if (botState[chatId] === undefined && senderOpenId !== '' && botState[senderOpenId] !== undefined) stateKey = senderOpenId
+      // Agent question relay: if the agent is waiting for an answer, feed it.
+      const pending = pendingQuestions.get(stateKey)
+      if (pending !== undefined) {
+        pendingQuestions.delete(stateKey)
+        pending.resolve(text)
+        return
+      }
       const cmdReply = await handleCommand(stateKey, text)
       if (cmdReply !== null) {
         await sendText(botConfig, chatId, cmdReply)
@@ -559,6 +651,16 @@ export function apply(ctx: Context, config?: Config): void {
       if (parsed !== null && parsed.type === 'menu') {
         json(res, 200, { code: 0 })
         void handleMenu(parsed).catch((e) => console.error('[feishu-bot] menu error: ' + String(e)))
+        return
+      }
+      if (parsed !== null && parsed.type === 'card') {
+        json(res, 200, { code: 0 })
+        void handleCard(parsed).catch((e) => console.error('[feishu-bot] card error: ' + String(e)))
+        return
+      }
+      if (header.event_type === 'card.action.trigger') {
+        json(res, 200, { code: 0 })
+        void handleCard(parsed).catch((e) => console.error('[feishu-bot] card error: ' + String(e)))
         return
       }
       if (header.event_type === 'application.bot.menu_v6') {
@@ -721,6 +823,34 @@ export function apply(ctx: Context, config?: Config): void {
       const disposers = [statusTool, configureTool, testTool].map((tool) => ctx.tools.register(tool))
       return () => { for (const d of disposers) d() }
     }, 'dsh-feishu-bot: tools')
+
+    // Agent question relay: when the DSH agent asks the user a question
+    // (ask_user_question), send it to the Feishu chat and wait for the reply.
+    const uq = ctx.get('userQuestions')
+    if (uq !== undefined) {
+      ctx.effect(() => uq.registerProvider({
+        ask: async (request: any) => {
+          const agent = request && request.agent
+          let chatKey: string | null = null
+          if (agent !== undefined && agent !== null) {
+            for (const [k, entry] of chatAgents) {
+              if (entry !== undefined && entry.agent !== null && entry.agent.id === agent.id) { chatKey = k; break }
+            }
+            if (chatKey === null) chatKey = String(agent.id).replace(/^feishu-/, '')
+          }
+          if (chatKey === null || chatKey === '') throw new Error('no chat bound to the asking agent')
+          const answers: any[] = []
+          for (const q of (request && request.questions) || []) {
+            const text = renderQuestion(q)
+            await sendToChat(chatKey, text)
+            const answer = await askOne(chatKey, request && request.signal)
+            answers.push({ id: q.id, selected: answer === '' ? [] : [answer], custom: answer })
+          }
+          return { answers }
+        },
+      }), 'dsh-feishu-bot: user-questions')
+    }
+
     ctx.effect(() => {
       return () => {
         disposed = true
@@ -730,6 +860,7 @@ export function apply(ctx: Context, config?: Config): void {
         handles.length = 0
         chatAgents.clear()
         chatLocks.clear()
+        pendingQuestions.clear()
       }
     }, 'dsh-feishu-bot: teardown')
 
