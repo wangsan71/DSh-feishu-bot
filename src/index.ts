@@ -743,7 +743,7 @@ export function apply(ctx: Context, config?: Config): void {
       'Triggers: 飞书/Lark 机器人状态、机器人配置、查看机器人是否在线.',
     parameters: {},
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: {} },
+      schema: { type: 'object', additionalProperties: true },
       render: renderJson,
     },
     execute: async () => ({
@@ -768,7 +768,7 @@ export function apply(ctx: Context, config?: Config): void {
       notify_chat_id: { type: 'string', description: 'Default chat_id/open_id for lark_notify notifications from other DSH conversations.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: {} },
+      schema: { type: 'object', additionalProperties: true },
       render: renderJson,
     },
     execute: async (args: { app_id?: string; app_secret?: string; domain?: string; cwd?: string; notify_chat_id?: string }) => {
@@ -796,17 +796,19 @@ export function apply(ctx: Context, config?: Config): void {
       'Triggers: 测试飞书/Lark 机器人、验证凭据、为什么机器人没回复.',
     parameters: {},
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: {} },
+      schema: { type: 'object', additionalProperties: true },
       render: renderJson,
     },
     execute: async () => {
-      if (!botConfig.app_id || !botConfig.app_secret) return { ok: false, error: 'not configured; use lark_configure first' }
+      if (!botConfig.app_id || !botConfig.app_secret) {
+        return { ok: false, domain: botConfig.domain ?? 'feishu', tokenOk: false, bridgeRunning: bridgeHandle !== null, agentCount: chatAgents.size, error: 'not configured; use lark_configure first' }
+      }
       const dom = botConfig.domain ?? 'feishu'
       try {
         const t = await tenantToken(hostOf(dom), botConfig)
-        return { ok: true, domain: dom, tokenOk: t !== '', bridgeRunning: bridgeHandle !== null, agentCount: chatAgents.size }
+        return { ok: true, domain: dom, tokenOk: t !== '', bridgeRunning: bridgeHandle !== null, agentCount: chatAgents.size, error: '' }
       } catch (e) {
-        return { ok: false, domain: dom, error: String(e instanceof Error ? e.message : e) }
+        return { ok: false, domain: dom, tokenOk: false, bridgeRunning: bridgeHandle !== null, agentCount: chatAgents.size, error: String(e instanceof Error ? e.message : e) }
       }
     },
   })
@@ -866,17 +868,19 @@ export function apply(ctx: Context, config?: Config): void {
       chat_id: { type: 'string', description: 'Target chat_id or open_id. Optional; defaults to notify_chat_id config or the caller\'s bound Feishu chat.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: {} },
+      schema: { type: 'object', additionalProperties: true },
       render: renderJson,
     },
     execute: async (args: { content?: string; workspace?: string; session?: string; chat_id?: string }, exec: any) => {
-      if (!botConfig.app_id || !botConfig.app_secret) return { ok: false, error: 'not configured; use lark_configure first' }
+      if (!botConfig.app_id || !botConfig.app_secret) {
+        return { ok: false, chatId: '', text: '', error: 'not configured; use lark_configure first' }
+      }
       const content = String(args.content ?? '').trim()
-      if (content === '') return { ok: false, error: 'content is required' }
+      if (content === '') return { ok: false, chatId: '', text: '', error: 'content is required' }
       const ctxInfo = notifyContext(exec)
       const chatId = String(args.chat_id ?? '').trim() !== '' ? String(args.chat_id).trim() : ctxInfo.chatId
       if (chatId === '') {
-        return { ok: false, error: 'no target chat: pass chat_id or set notify_chat_id in the config (lark_configure)' }
+        return { ok: false, chatId: '', text: '', error: 'no target chat: pass chat_id or set notify_chat_id in the config (lark_configure)' }
       }
       const workspace = String(args.workspace ?? '').trim() !== '' ? String(args.workspace).trim() : ctxInfo.workspace
       const session = String(args.session ?? '').trim() !== '' ? String(args.session).trim() : ctxInfo.session
@@ -884,9 +888,9 @@ export function apply(ctx: Context, config?: Config): void {
       const text = label + '：' + content
       try {
         await sendToChat(chatId, text)
-        return { ok: true, chatId, text }
+        return { ok: true, chatId, text, error: '' }
       } catch (e) {
-        return { ok: false, error: String(e instanceof Error ? e.message : e) }
+        return { ok: false, chatId, text: '', error: String(e instanceof Error ? e.message : e) }
       }
     },
   })
