@@ -21,6 +21,14 @@ no public URL, no tunnel required.
   app), an AppID/Secret form, and save/refresh actions.
 - **Agent tools**: `lark_status`, `lark_configure`, `lark_test` — give this repo
   URL to any DSH agent and it can configure the bot by itself.
+- **Interactive card selection**: the "switch session / workspace" menu items pop
+  a card with buttons; tap a button to switch.
+- **Agent questions relayed to you**: when the agent asks you something, the
+  question (with numbered options) is forwarded to Feishu; your reply is the answer.
+
+> 📖 **Docs**: [初始化文档.md](初始化文档.md) (setup from scratch) ·
+> [交接文档.md](交接文档.md) (maintainers: architecture, official dev format,
+> release flow, changelog).
 
 ## Install
 
