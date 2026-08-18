@@ -89,8 +89,15 @@ your DM):
 | `change_session` / `切换会话` | list the current workspace's sessions |
 | `help` / `帮助` | show the command list |
 
-After a menu click the bot lists the options; reply with the number in the DM
-to finish the switch (the reply reuses the menu-established state).
+After a menu click the bot shows an **interactive card** (one button per
+option); tap a button to switch, or reply with the number in the DM (text
+commands work too).
+
+## Agent questions relayed to you
+
+When the DSH agent needs to ask you something (e.g. the `ask_user_question`
+tool), the bot forwards the question to Feishu (with numbered options). Reply
+in the chat and the agent continues.
 
 ## Agent-driven configuration
 
