@@ -671,6 +671,14 @@ export function apply(ctx: Context, config?: Config): void {
         content: [{ type: 'text', text }],
         source: { kind: 'user' },
       }
+      // Append the incoming Feishu message as a REAL session user/message event
+      // so the Web UI conversation stream renders it. agent.followup() alone
+      // only writes agent/inbox/spliced (the Web UI does not render that).
+      try {
+        agent.session.append('user/message', message)
+      } catch (e) {
+        console.error('[feishu-bot] session.append(user/message) failed: ' + String(e))
+      }
       const before = agent.session.deriveMessages().length
       agent.followup(message)
       await agent.whenIdle()
