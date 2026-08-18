@@ -90,6 +90,7 @@
   "files": [
     "lib",
     "bridge",
+    "scripts",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
